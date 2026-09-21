@@ -241,7 +241,7 @@ def process_video(input_path, output_path, florence_model, florence_processor, m
             else:
                 lama_result = process_image_with_lama(np.array(pil_image), np.array(mask_image), model_manager)
                 if double_pass:
-                    lama_result = process_image_with_lama(lama_result, np.array(mask_image), model_manager)
+                    lama_result = process_image_with_lama(cv2.cvtColor(lama_result, cv2.COLOR_BGR2RGB), np.array(mask_image), model_manager)
                 result_image = Image.fromarray(cv2.cvtColor(lama_result, cv2.COLOR_BGR2RGB))
             
             # Convert back to OpenCV format and write to output video
@@ -451,7 +451,7 @@ def process_video_two_pass(input_path, output_path, florence_model, florence_pro
                 else:
                     lama_result = process_image_with_lama(np.array(pil_image), np.array(mask), model_manager)
                     if double_pass:
-                        lama_result = process_image_with_lama(lama_result, np.array(mask), model_manager)
+                        lama_result = process_image_with_lama(cv2.cvtColor(lama_result, cv2.COLOR_BGR2RGB), np.array(mask), model_manager)
                     result_image = Image.fromarray(cv2.cvtColor(lama_result, cv2.COLOR_BGR2RGB))
 
                 frame_result = cv2.cvtColor(np.array(result_image), cv2.COLOR_RGB2BGR)
@@ -542,7 +542,7 @@ def handle_one(image_path: Path, output_path: Path, florence_model, florence_pro
     else:
         lama_result = process_image_with_lama(np.array(image), np.array(mask_image), model_manager)
         if double_pass:
-            lama_result = process_image_with_lama(lama_result, np.array(mask_image), model_manager)
+            lama_result = process_image_with_lama(cv2.cvtColor(lama_result, cv2.COLOR_BGR2RGB), np.array(mask_image), model_manager)
         result_image = Image.fromarray(cv2.cvtColor(lama_result, cv2.COLOR_BGR2RGB))
 
     # Determine output format
