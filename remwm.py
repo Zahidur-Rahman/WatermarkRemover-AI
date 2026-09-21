@@ -57,7 +57,23 @@ def identify(task_prompt: TaskType, image: MatLike, text_input: str, model: Flor
         generated_text, task=task_prompt.value, image_size=(image.width, image.height)
     )
 
-def get_watermark_mask(image: MatLike, model: Florence2ForConditionalGeneration, processor: AutoProcessor, device: str, max_bbox_percent: float, detection_prompt: str = "watermark"):
+def extract_strokes(roi: np.ndarray) -> np.ndarray:
+    """Extract local high-contrast edges from a bounding box region."""
+    if roi.size == 0:
+        return np.zeros((0, 0), dtype=np.uint8)
+    h, w = roi.shape[:2]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
+    ksize = max(5, int(min(h, w) * 0.25) | 1)
+    ksize = min(ksize, 31)
+    blur = cv2.GaussianBlur(gray, (ksize, ksize), 0)
+    diff = cv2.absdiff(gray, blur)
+    thresh_val = max(4, int(np.percentile(diff, 70) * 0.4))
+    _, stroke_mask = cv2.threshold(diff, thresh_val, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    return cv2.dilate(stroke_mask, kernel, iterations=2)
+
+
+def get_watermark_mask(image: MatLike, model: Florence2ForConditionalGeneration, processor: AutoProcessor, device: str, max_bbox_percent: float, detection_prompt: str = "watermark", mask_mode: str = "box"):
     """
     Detect watermarks and create a mask for inpainting.
 
@@ -68,6 +84,7 @@ def get_watermark_mask(image: MatLike, model: Florence2ForConditionalGeneration,
         device: cuda or cpu
         max_bbox_percent: Maximum bbox size as percentage of image
         detection_prompt: Text prompt for detection (e.g. "watermark", "watermark Sora logo", "Getty Images")
+        mask_mode: 'box' or 'stroke' (default: 'box')
     """
     task_prompt = TaskType.OPEN_VOCAB_DETECTION
     parsed_answer = identify(task_prompt, image, detection_prompt, model, processor, device)
@@ -78,13 +95,26 @@ def get_watermark_mask(image: MatLike, model: Florence2ForConditionalGeneration,
     detection_key = "<OPEN_VOCABULARY_DETECTION>"
     if detection_key in parsed_answer and "bboxes" in parsed_answer[detection_key]:
         image_area = image.width * image.height
+        img_np = np.array(image) if mask_mode == "stroke" else None
+        mask_np = np.zeros((image.height, image.width), dtype=np.uint8) if mask_mode == "stroke" else None
+
         for bbox in parsed_answer[detection_key]["bboxes"]:
             x1, y1, x2, y2 = map(int, bbox)
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(image.width, x2), min(image.height, y2)
             bbox_area = (x2 - x1) * (y2 - y1)
             if (bbox_area / image_area) * 100 <= max_bbox_percent:
-                draw.rectangle([x1, y1, x2, y2], fill=255)
+                if mask_mode == "stroke" and x2 > x1 and y2 > y1:
+                    roi = cv2.cvtColor(img_np[y1:y2, x1:x2], cv2.COLOR_RGB2BGR) if img_np.ndim == 3 else img_np[y1:y2, x1:x2]
+                    strokes = extract_strokes(roi)
+                    mask_np[y1:y2, x1:x2] = cv2.bitwise_or(mask_np[y1:y2, x1:x2], strokes)
+                else:
+                    draw.rectangle([x1, y1, x2, y2], fill=255)
             else:
                 logger.warning(f"Skipping large bounding box: {bbox} covering {bbox_area / image_area:.2%} of the image")
+
+        if mask_mode == "stroke":
+            mask = Image.fromarray(mask_np)
 
     return mask
 
@@ -145,7 +175,7 @@ def is_video_file(file_path):
     video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm']
     return Path(file_path).suffix.lower() in video_extensions
 
-def process_video(input_path, output_path, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, detection_prompt="watermark", progress_offset=0, progress_scale=100):
+def process_video(input_path, output_path, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, detection_prompt="watermark", progress_offset=0, progress_scale=100, mask_mode="box", double_pass=False):
     """Process a video file by extracting frames, removing watermarks, and reconstructing the video"""
     cap = cv2.VideoCapture(str(input_path))
     if not cap.isOpened():
@@ -198,7 +228,7 @@ def process_video(input_path, output_path, florence_model, florence_processor, m
             pil_image = Image.fromarray(frame_rgb)
             
             # Get watermark mask
-            mask_image = get_watermark_mask(pil_image, florence_model, florence_processor, device, max_bbox_percent, detection_prompt)
+            mask_image = get_watermark_mask(pil_image, florence_model, florence_processor, device, max_bbox_percent, detection_prompt, mask_mode=mask_mode)
             
             # Process frame
             if transparent:
@@ -210,6 +240,8 @@ def process_video(input_path, output_path, florence_model, florence_processor, m
                 result_image = background
             else:
                 lama_result = process_image_with_lama(np.array(pil_image), np.array(mask_image), model_manager)
+                if double_pass:
+                    lama_result = process_image_with_lama(lama_result, np.array(mask_image), model_manager)
                 result_image = Image.fromarray(cv2.cvtColor(lama_result, cv2.COLOR_BGR2RGB))
             
             # Convert back to OpenCV format and write to output video
@@ -271,7 +303,7 @@ def process_video(input_path, output_path, florence_model, florence_processor, m
     return output_file
 
 
-def process_video_two_pass(input_path, output_path, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, detection_prompt="watermark", detection_skip=1, fade_in_sec=0.0, fade_out_sec=0.0, progress_offset=0, progress_scale=100):
+def process_video_two_pass(input_path, output_path, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, detection_prompt="watermark", detection_skip=1, fade_in_sec=0.0, fade_out_sec=0.0, progress_offset=0, progress_scale=100, mask_mode="box", double_pass=False):
     """
     Two-pass video processing with frame skip detection and fade in/out handling.
 
@@ -391,11 +423,24 @@ def process_video_two_pass(input_path, output_path, florence_model, florence_pro
                 pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
                 # Create mask from bboxes
-                mask = Image.new("L", pil_image.size, 0)
-                draw = ImageDraw.Draw(mask)
-                for bbox in frame_masks[frame_idx]:
-                    x1, y1, x2, y2 = bbox
-                    draw.rectangle([x1, y1, x2, y2], fill=255)
+                if mask_mode == "stroke":
+                    frame_np = np.array(pil_image)
+                    mask_np = np.zeros((pil_image.height, pil_image.width), dtype=np.uint8)
+                    for bbox in frame_masks[frame_idx]:
+                        x1, y1, x2, y2 = bbox
+                        x1, y1 = max(0, x1), max(0, y1)
+                        x2, y2 = min(pil_image.width, x2), min(pil_image.height, y2)
+                        if x2 > x1 and y2 > y1:
+                            roi = cv2.cvtColor(frame_np[y1:y2, x1:x2], cv2.COLOR_RGB2BGR) if frame_np.ndim == 3 else frame_np[y1:y2, x1:x2]
+                            strokes = extract_strokes(roi)
+                            mask_np[y1:y2, x1:x2] = cv2.bitwise_or(mask_np[y1:y2, x1:x2], strokes)
+                    mask = Image.fromarray(mask_np)
+                else:
+                    mask = Image.new("L", pil_image.size, 0)
+                    draw = ImageDraw.Draw(mask)
+                    for bbox in frame_masks[frame_idx]:
+                        x1, y1, x2, y2 = bbox
+                        draw.rectangle([x1, y1, x2, y2], fill=255)
 
                 # Apply inpainting or transparency
                 if transparent:
@@ -405,6 +450,8 @@ def process_video_two_pass(input_path, output_path, florence_model, florence_pro
                     result_image = background
                 else:
                     lama_result = process_image_with_lama(np.array(pil_image), np.array(mask), model_manager)
+                    if double_pass:
+                        lama_result = process_image_with_lama(lama_result, np.array(mask), model_manager)
                     result_image = Image.fromarray(cv2.cvtColor(lama_result, cv2.COLOR_BGR2RGB))
 
                 frame_result = cv2.cvtColor(np.array(result_image), cv2.COLOR_RGB2BGR)
@@ -459,7 +506,7 @@ def process_video_two_pass(input_path, output_path, florence_model, florence_pro
     return output_file
 
 
-def handle_one(image_path: Path, output_path: Path, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, overwrite, detection_prompt="watermark", detection_skip=1, fade_in=0.0, fade_out=0.0, progress_offset=0, progress_scale=100):
+def handle_one(image_path: Path, output_path: Path, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, overwrite, detection_prompt="watermark", detection_skip=1, fade_in=0.0, fade_out=0.0, progress_offset=0, progress_scale=100, mask_mode="box", double_pass=False, max_dim=None):
     # SAFETY: Never overwrite the input file
     if image_path.resolve() == output_path.resolve():
         logger.error(f"Cannot overwrite input file: {image_path}. Choose a different output path.")
@@ -475,18 +522,27 @@ def handle_one(image_path: Path, output_path: Path, florence_model, florence_pro
         # Use two-pass if detection_skip > 1 or fade handling is needed
         use_two_pass = detection_skip > 1 or fade_in > 0 or fade_out > 0
         if use_two_pass:
-            return process_video_two_pass(image_path, output_path, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, detection_prompt, detection_skip, fade_in, fade_out, progress_offset, progress_scale)
+            return process_video_two_pass(image_path, output_path, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, detection_prompt, detection_skip, fade_in, fade_out, progress_offset, progress_scale, mask_mode=mask_mode, double_pass=double_pass)
         else:
-            return process_video(image_path, output_path, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, detection_prompt, progress_offset, progress_scale)
+            return process_video(image_path, output_path, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, detection_prompt, progress_offset, progress_scale, mask_mode=mask_mode, double_pass=double_pass)
 
     # Process image
     image = Image.open(image_path).convert("RGB")
-    mask_image = get_watermark_mask(image, florence_model, florence_processor, device, max_bbox_percent, detection_prompt)
+    if max_dim is not None and max(image.width, image.height) > max_dim:
+        orig_w, orig_h = image.size
+        scale = max_dim / max(orig_w, orig_h)
+        new_size = (int(orig_w * scale), int(orig_h * scale))
+        image = image.resize(new_size, Image.Resampling.LANCZOS)
+        logger.info(f"Rescaled {image_path.name} from {orig_w}x{orig_h} to {image.width}x{image.height} (max-dim={max_dim})")
+
+    mask_image = get_watermark_mask(image, florence_model, florence_processor, device, max_bbox_percent, detection_prompt, mask_mode=mask_mode)
 
     if transparent:
         result_image = make_region_transparent(image, mask_image)
     else:
         lama_result = process_image_with_lama(np.array(image), np.array(mask_image), model_manager)
+        if double_pass:
+            lama_result = process_image_with_lama(lama_result, np.array(mask_image), model_manager)
         result_image = Image.fromarray(cv2.cvtColor(lama_result, cv2.COLOR_BGR2RGB))
 
     # Determine output format
@@ -526,7 +582,10 @@ def handle_one(image_path: Path, output_path: Path, florence_model, florence_pro
 @click.option("--detection-skip", default=1, type=int, help="Detect watermarks every N frames for videos (1-10). Higher = faster but may miss brief watermarks.")
 @click.option("--fade-in", default=0.0, type=float, help="Extend mask backwards by N seconds to handle fade-in watermarks.")
 @click.option("--fade-out", default=0.0, type=float, help="Extend mask forwards by N seconds to handle fade-out watermarks.")
-def main(input_path: str, output_path: str, preview: bool, overwrite: bool, transparent: bool, max_bbox_percent: float, force_format: str, detection_prompt: str, detection_skip: int, fade_in: float, fade_out: float):
+@click.option("--mask-mode", type=click.Choice(["box", "stroke"], case_sensitive=False), default="box", help="Mask mode: 'box' (default) or 'stroke' for edge/stroke-level mask.")
+@click.option("--double-pass", is_flag=True, default=False, help="Run a second inpainting pass on the mask.")
+@click.option("--max-dim", type=int, default=None, help="Downscale image if max dimension exceeds this value.")
+def main(input_path: str, output_path: str, preview: bool, overwrite: bool, transparent: bool, max_bbox_percent: float, force_format: str, detection_prompt: str, detection_skip: int, fade_in: float, fade_out: float, mask_mode: str, double_pass: bool, max_dim: int):
     # Input validation
     if detection_skip < 1 or detection_skip > 10:
         logger.warning(f"detection_skip must be 1-10, got {detection_skip}. Using 1.")
@@ -658,7 +717,7 @@ def main(input_path: str, output_path: str, preview: bool, overwrite: bool, tran
             # Calculate progress range for this file
             progress_offset = int(idx / total_files * 100)
             progress_scale = int(100 / total_files)
-            handle_one(file_path, output_file, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, overwrite, detection_prompt, detection_skip, fade_in, fade_out, progress_offset, progress_scale)
+            handle_one(file_path, output_file, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, overwrite, detection_prompt, detection_skip, fade_in, fade_out, progress_offset, progress_scale, mask_mode=mask_mode, double_pass=double_pass, max_dim=max_dim)
     else:
         # Single file mode - if output is a directory, construct file path
         if output_path.is_dir():
@@ -673,7 +732,7 @@ def main(input_path: str, output_path: str, preview: bool, overwrite: bool, tran
             else:
                 output_file = output_file.with_suffix(".mp4")  # Default to mp4
 
-        handle_one(input_path, output_file, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, overwrite, detection_prompt, detection_skip, fade_in, fade_out)
+        handle_one(input_path, output_file, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, overwrite, detection_prompt, detection_skip, fade_in, fade_out, mask_mode=mask_mode, double_pass=double_pass, max_dim=max_dim)
         print(f"input_path:{input_path}, output_path:{output_file}, overall_progress:100")
 
 if __name__ == "__main__":
