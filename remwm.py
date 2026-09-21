@@ -58,7 +58,15 @@ def identify(task_prompt: TaskType, image: MatLike, text_input: str, model: Flor
     )
 
 def extract_strokes(roi: np.ndarray) -> np.ndarray:
-    """Extract local high-contrast edges from a bounding box region."""
+    """
+    Extract local high-contrast edges and stroke contours from a bounding box region.
+
+    Args:
+        roi: BGR or grayscale numpy array of the detected bounding box.
+
+    Returns:
+        Dilated binary mask of the detected character strokes.
+    """
     if roi.size == 0:
         return np.zeros((0, 0), dtype=np.uint8)
     h, w = roi.shape[:2]
@@ -150,7 +158,17 @@ def detect_only(image: MatLike, model: Florence2ForConditionalGeneration, proces
     return results
 
 def process_image_with_lama(image: MatLike, mask: MatLike, model_manager: LamaInpaint):
-    """Return the shared LaMA adapter result as a uint8 BGR image."""
+    """
+    Inpaint masked regions using the shared LaMA model adapter.
+
+    Args:
+        image: Input image array.
+        mask: Binary mask indicating regions to inpaint.
+        model_manager: Initialized LaMA model manager.
+
+    Returns:
+        Inpainted uint8 BGR image.
+    """
     result = model_manager(image, mask)
 
     if result.dtype in [np.float64, np.float32]:
@@ -171,7 +189,15 @@ def make_region_transparent(image: Image.Image, mask: Image.Image):
     return transparent_image
 
 def is_video_file(file_path):
-    """Check if the file is a video based on its extension"""
+    """
+    Check if the file is a video based on its file extension.
+
+    Args:
+        file_path: Path or filename to check.
+
+    Returns:
+        True if file has a supported video extension, False otherwise.
+    """
     video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm']
     return Path(file_path).suffix.lower() in video_extensions
 
@@ -507,6 +533,30 @@ def process_video_two_pass(input_path, output_path, florence_model, florence_pro
 
 
 def handle_one(image_path: Path, output_path: Path, florence_model, florence_processor, model_manager, device, transparent, max_bbox_percent, force_format, overwrite, detection_prompt="watermark", detection_skip=1, fade_in=0.0, fade_out=0.0, progress_offset=0, progress_scale=100, mask_mode="box", double_pass=False, max_dim=None):
+    """
+    Process a single image or video file for watermark removal.
+
+    Args:
+        image_path: Path to input image or video file.
+        output_path: Destination path for processed output.
+        florence_model: Loaded Florence-2 model.
+        florence_processor: Loaded Florence-2 processor.
+        model_manager: Loaded LaMA inpainting model.
+        device: Computation device ('cuda' or 'cpu').
+        transparent: Whether to make watermarks transparent.
+        max_bbox_percent: Maximum bounding box area percentage allowed.
+        force_format: Force output format extension.
+        overwrite: Whether to overwrite existing files.
+        detection_prompt: Text prompt for watermark detection.
+        detection_skip: Detection interval in frames for videos.
+        fade_in: Fade-in lead duration in seconds for video masks.
+        fade_out: Fade-out tail duration in seconds for video masks.
+        progress_offset: Progress reporting baseline percentage.
+        progress_scale: Progress reporting scale range.
+        mask_mode: 'box' or 'stroke' mask mode.
+        double_pass: Whether to run a second inpainting pass.
+        max_dim: Maximum dimension to downscale image before processing.
+    """
     # SAFETY: Never overwrite the input file
     if image_path.resolve() == output_path.resolve():
         logger.error(f"Cannot overwrite input file: {image_path}. Choose a different output path.")
