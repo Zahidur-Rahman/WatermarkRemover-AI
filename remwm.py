@@ -25,7 +25,15 @@ except ImportError:
 
 
 def load_lama_model(device):
-    """Load checksum-verified LaMA weights using the standalone adapter."""
+    """
+    Load checksum-verified LaMA weights using the standalone adapter.
+
+    Args:
+        device: Computation device ('cuda' or 'cpu').
+
+    Returns:
+        Initialized LamaInpaint model instance.
+    """
     logger.info("Loading LaMA (verifying cached weights or downloading if missing)")
     return LamaInpaint(device)
 
@@ -35,6 +43,20 @@ class TaskType(str, Enum):
     """Detect bounding box for objects and OCR text"""
 
 def identify(task_prompt: TaskType, image: MatLike, text_input: str, model: Florence2ForConditionalGeneration, processor: AutoProcessor, device: str):
+    """
+    Run Florence-2 vision-language inference on an image with a specific task prompt.
+
+    Args:
+        task_prompt: The Florence-2 TaskType prompt to execute.
+        image: PIL Image or numpy array.
+        text_input: Optional text query or detection prompt.
+        model: Loaded Florence-2 model.
+        processor: Loaded Florence-2 processor.
+        device: Computation device ('cuda' or 'cpu').
+
+    Returns:
+        Dictionary containing parsed model predictions and bounding boxes.
+    """
     if not isinstance(task_prompt, TaskType):
         raise ValueError(f"task_prompt must be a TaskType, but {task_prompt} is of type {type(task_prompt)}")
 
@@ -177,6 +199,16 @@ def process_image_with_lama(image: MatLike, mask: MatLike, model_manager: LamaIn
     return result
 
 def make_region_transparent(image: Image.Image, mask: Image.Image):
+    """
+    Convert masked watermark regions in an image to full transparency.
+
+    Args:
+        image: Source PIL Image.
+        mask: Grayscale mask where non-zero pixels represent watermark regions.
+
+    Returns:
+        RGBA PIL Image with transparent watermark areas.
+    """
     image = image.convert("RGBA")
     mask = mask.convert("L")
     transparent_image = Image.new("RGBA", image.size)
@@ -636,6 +668,25 @@ def handle_one(image_path: Path, output_path: Path, florence_model, florence_pro
 @click.option("--double-pass", is_flag=True, default=False, help="Run a second inpainting pass on the mask.")
 @click.option("--max-dim", type=click.IntRange(min=1), default=None, help="Downscale image if max dimension exceeds this value.")
 def main(input_path: str, output_path: str, preview: bool, overwrite: bool, transparent: bool, max_bbox_percent: float, force_format: str, detection_prompt: str, detection_skip: int, fade_in: float, fade_out: float, mask_mode: str, double_pass: bool, max_dim: int):
+    """
+    CLI entry point for WatermarkRemover-AI to process images, videos, or directories.
+
+    Args:
+        input_path: Path to source image, video, or folder.
+        output_path: Path to save processed results.
+        preview: Whether to only output detection preview JSON without inpainting.
+        overwrite: Overwrite existing files.
+        transparent: Replace watermarks with transparency instead of inpainting.
+        max_bbox_percent: Maximum allowed bounding box size percentage.
+        force_format: Force specific output extension.
+        detection_prompt: Text prompt for Florence-2 detection.
+        detection_skip: Frame interval for video detection.
+        fade_in: Fade-in lead duration in seconds for video masks.
+        fade_out: Fade-out tail duration in seconds for video masks.
+        mask_mode: 'box' or 'stroke' mask mode.
+        double_pass: Whether to run a second inpainting pass.
+        max_dim: Maximum dimension to downscale image before processing.
+    """
     # Input validation
     if detection_skip < 1 or detection_skip > 10:
         logger.warning(f"detection_skip must be 1-10, got {detection_skip}. Using 1.")
