@@ -130,7 +130,7 @@ python remwm.py input.png --preview
 | `--preview` | Preview detected watermarks without processing |
 | `--mask-mode` | Mask method: `box` (default) or `stroke` for edge/stroke-level mask |
 | `--double-pass` | Run a second inpainting pass to reduce residual artifacts |
-| `--max-dim` | Downscale image if max dimension exceeds this value |
+| `--max-dim` | Downscale image if max dimension exceeds this value (default: None) |
 
 ---
 

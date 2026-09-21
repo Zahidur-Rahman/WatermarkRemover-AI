@@ -531,7 +531,7 @@ def handle_one(image_path: Path, output_path: Path, florence_model, florence_pro
     if max_dim is not None and max(image.width, image.height) > max_dim:
         orig_w, orig_h = image.size
         scale = max_dim / max(orig_w, orig_h)
-        new_size = (int(orig_w * scale), int(orig_h * scale))
+        new_size = (max(1, int(orig_w * scale)), max(1, int(orig_h * scale)))
         image = image.resize(new_size, Image.Resampling.LANCZOS)
         logger.info(f"Rescaled {image_path.name} from {orig_w}x{orig_h} to {image.width}x{image.height} (max-dim={max_dim})")
 
@@ -584,7 +584,7 @@ def handle_one(image_path: Path, output_path: Path, florence_model, florence_pro
 @click.option("--fade-out", default=0.0, type=float, help="Extend mask forwards by N seconds to handle fade-out watermarks.")
 @click.option("--mask-mode", type=click.Choice(["box", "stroke"], case_sensitive=False), default="box", help="Mask mode: 'box' (default) or 'stroke' for edge/stroke-level mask.")
 @click.option("--double-pass", is_flag=True, default=False, help="Run a second inpainting pass on the mask.")
-@click.option("--max-dim", type=int, default=None, help="Downscale image if max dimension exceeds this value.")
+@click.option("--max-dim", type=click.IntRange(min=1), default=None, help="Downscale image if max dimension exceeds this value.")
 def main(input_path: str, output_path: str, preview: bool, overwrite: bool, transparent: bool, max_bbox_percent: float, force_format: str, detection_prompt: str, detection_skip: int, fade_in: float, fade_out: float, mask_mode: str, double_pass: bool, max_dim: int):
     # Input validation
     if detection_skip < 1 or detection_skip > 10:
