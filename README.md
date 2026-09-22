@@ -108,6 +108,9 @@ python remwm.py ./images ./output --overwrite --max-bbox-percent=15 --force-form
 # Process video with two-pass detection
 python remwm.py video.mp4 ./output --detection-skip=3 --fade-in=0.5 --fade-out=0.5
 
+# Stroke-level mask with second inpainting pass
+python remwm.py input.png output/ --mask-mode=stroke --double-pass
+
 # Preview mode (detect without processing)
 python remwm.py input.png --preview
 ```
@@ -125,6 +128,9 @@ python remwm.py input.png --preview
 | `--fade-in` | Extend mask backwards by N seconds (for fade-in watermarks) |
 | `--fade-out` | Extend mask forwards by N seconds (for fade-out watermarks) |
 | `--preview` | Preview detected watermarks without processing |
+| `--mask-mode` | Mask method: `box` (default) or `stroke` for edge/stroke-level mask |
+| `--double-pass` | Run a second inpainting pass to reduce residual artifacts |
+| `--max-dim` | Downscale image if max dimension exceeds this value (default: None) |
 
 ---
 
